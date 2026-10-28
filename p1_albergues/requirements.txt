@@ -1,0 +1,5 @@
+Faker==33.1.0
+psycopg2-binary==2.9.10
+pymongo==4.10.1
+python-dotenv==1.0.1
+redis==5.2.1
