@@ -60,20 +60,38 @@ def xera_albergues(n, rng):
 
 
 def xera_peregrinos(n, rng, fake):
-    """TODO (primeiro paso): devolve `n` peregrinos.
+    
+    peregrinos = []
+    #lista de fakers por país, para poder xerar nomes e apelidos realistas
+    fakers = {
+        "es_ES": Faker("es_ES"),
+        "pt_PT": Faker("pt_PT"),
+        "de_DE": Faker("de_DE"),
+    }
+    paises = {
+        "es_ES": "España",
+        "pt_PT": "Portugal",
+        "de_DE": "Alemania",
+    }
 
-    Cada peregrino é un dicionario con, polo menos: id, nome, apelidos, documento,
-    email, pais e data_nacemento.
+    for i in range(1, n + 1):
+        #camiño e país aleatorio para cada peregrino
+        camino = rng.choice(list(CAMIÑOS))
+        locale = rng.choice(list(fakers))
+        fake_pais = fakers[locale]
 
-    Pistas:
-      - fake.first_name() e fake.last_name() dan nomes realistas.
-      - Faker(["es_ES", "pt_PT", "de_DE"]) mestura idiomas, pero para saber o país
-        de cada peregrino é máis cómodo ter un Faker por país.
-      - O documento e o email deben ser únicos.
-      - Coidado coa reproducibilidade: fake.date_of_birth() depende da data de hoxe,
-        así que mañá xeraría datos distintos coa mesma semente.
-    """
-    return pendente("xera_peregrinos")
+        peregrinos.append({
+            "id": i,
+            "nome": fake_pais.first_name(),
+            "apelidos": fake_pais.last_name(),
+            "pais": paises[locale],
+            "documento": fake.unique.ssn(),
+            "email": fake.unique.email(),
+            "data_nacemento": fake.date_of_birth(minimum_age=18, maximum_age=80).isoformat(),
+            "camino": camino
+        })
+    
+    return peregrinos
 
 
 def xera_reservas(n, albergues, peregrinos, desde, dias, rng):
