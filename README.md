@@ -9,7 +9,7 @@ Punto de partida do proxecto. Le antes o enunciado (`BDA_UD1_P1_Reservas_albergu
 | `.env.example` | Variables de conexión. Cópiao como `.env` e cambia os contrasinais. |
 | `.gitignore` | Deixa fóra do repositorio `.env`, `copias/` e o contorno virtual. |
 | `requirements.txt` | Librarías de Python con versión fixada. |
-| `src/xera_datos.py` | Esqueleto do xerador. `xera_albergues()` está feita como exemplo; o resto ten `TODO`. |
+| `src/xera_datos.py` | Xeración de albergues, peregrinos, reservas e fichas; carga PostgreSQL implementada. A carga MongoDB segue pendente. |
 | `src/__init__.py` | Fai de `src` un paquete de Python (permite `from src.modulo import ...`). |
 
 Todo o demais (`compose.yaml`, esquema da base de datos, código de Redis, copias, README final) facédelo vós.
@@ -55,11 +55,26 @@ python -m venv .venv
 source .venv/bin/activate          # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 4. Executade o xerador: xa funciona, aínda que só xera albergues
+# 4. Executade o xerador sen cargar os datos nas bases
 python -m src.xera_datos --sen-carga
 ```
 
-Seguinte paso: completar `xera_peregrinos()`.
+## Carga en PostgreSQL
+
+Desde a raíz do proxecto, copia `.env.example` como `.env` e configura as
+credenciais. Inicia o servizo definido en `compose.yaml` e executa o xerador sen
+`--sen-carga`:
+
+```bash
+docker compose up -d postgres
+python -m src.xera_datos
+```
+
+`carga_postgres()` crea as táboas necesarias e substitúe os datos relacionales
+previos pola xeración actual nunha única transacción. Isto elimina as reservas
+novas creadas pola aplicación; úsao só cando queiras reiniciar o estado inicial.
+`carga_mongo()` actualiza as fichas xeradas e elimina as que xa non correspondan
+a un albergue da xeración actual.
 
 ## Comprobar a reproducibilidade
 
@@ -73,9 +88,8 @@ diff a.txt b.txt && echo "Reproducible"
 
 ## Orde recomendada
 
-1. `xera_peregrinos()`, `xera_reservas()` e `xera_fichas()` con `--sen-carga`.
-2. `compose.yaml` con PostgreSQL e Redis (podedes partir do do obradoiro).
-3. Esquema de PostgreSQL e `carga_postgres()`.
+1. Probar `xera_peregrinos()`, `xera_reservas()` e `xera_fichas()` con `--sen-carga`.
+2. PostgreSQL: iniciar o servizo con `docker compose up -d postgres` e probar `carga_postgres()`.
 4. Redis: contadores, `reservar()`, proba de sobreventa e caché.
 5. MongoDB (verase máis adiante): servizo no compose e `carga_mongo()`.
 6. `src/copia.sh` e proba de restauración.

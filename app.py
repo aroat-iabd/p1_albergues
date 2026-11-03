@@ -16,11 +16,11 @@ from redis import Redis
 
 # Executa esta comprobación e o decremento como unha única operación
 _DECREMENTAR_SE_DISPONIBLE = """
-local dispoñibles = tonumber(redis.call('GET', KEYS[1]))
-if not dispoñibles then
+local disponibles = tonumber(redis.call('GET', KEYS[1]))
+if not disponibles then
     return -1
 end
-if dispoñibles <= 0 then
+if disponibles <= 0 then
     return 0
 end
 redis.call('DECR', KEYS[1])
@@ -171,21 +171,15 @@ def reservar(albergue_id, noite, peregrino_id):
             return False
 
         try:
-            # O bloqueo dá IDs únicos co esquema actual, que non define unha secuencia
             conexion = conectar_postgres()
             try:
                 with conexion:
                     with conexion.cursor() as cursor:
-                        # A táboa bloqueada permite asignar un ID sen secuencia.
-                        cursor.execute("LOCK TABLE reservas IN EXCLUSIVE MODE")
-                        cursor.execute(
-                            "SELECT COALESCE(MAX(id), 0) + 1 FROM reservas"
-                        )
-                        reserva_id = cursor.fetchone()[0]
+                        # PostgreSQL asigna o ID coa secuencia IDENTITY, sen bloquear a táboa.
                         cursor.execute("""
-                            INSERT INTO reservas (id, albergue_id, peregrino_id, data)
-                            VALUES (%s, %s, %s, %s)
-                        """, (reserva_id, albergue_id, peregrino_id, noite))
+                            INSERT INTO reservas (albergue_id, peregrino_id, data)
+                            VALUES (%s, %s, %s)
+                        """, (albergue_id, peregrino_id, noite))
             finally:
                 conexion.close()
         except Exception as erro:
@@ -222,7 +216,7 @@ def consulta_postgres(camino, noite):
     conexion = conectar_postgres()
     try:
         with conexion.cursor() as cursor:
-            # Conta as reservas da noite e devolve só os albergues con prazas dispoñibles
+            # Conta as reservas da noite e devolve só os albergues con prazas disponibles
             cursor.execute("""
                 SELECT albergues.id, albergues.nome,
                        albergues.prazas - COUNT(reservas.id) AS libres
@@ -268,12 +262,12 @@ def consulta_redis(camino, noite):
             conexion.close()
 
         # Recupera todos os contadores nunha operación Redis e filtra os esgotados
-        dispoñibles = cliente_redis.mget([
+        disponibles = cliente_redis.mget([
             chave_dispo(id_, noite) for id_, _ in albergues
         ])
         resultado = [
             {"albergue_id": id_, "nome": nome, "prazas_libres": int(libres)}
-            for (id_, nome), libres in zip(albergues, dispoñibles)
+            for (id_, nome), libres in zip(albergues, disponibles)
             if libres is not None and int(libres) > 0
         ]
         # Garda a resposta serializada; o TTL limita canto tempo pode quedar desactualizada
