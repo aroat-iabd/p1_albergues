@@ -1,20 +1,19 @@
-"""Xerador de datos de proba para a rede de albergues Camiño Aberto (ficticia).
-
-ESQUELETO DO P1. Xa funciona: xera albergues e mostra un resumo. O resto
-das funcións están marcadas con TODO e, mentres non as completes, avisan
-e devolven unha lista baleira para que o script se poida executar desde o
-primeiro día.
+"""Xerador e cargador de datos de proba para a rede Camiño Aberto (ficticia).
 
 Exemplos (desde a raíz do proxecto):
-  python -m src.xera_datos --sen-carga                    # só xerar e mostrar
+  python -m src.xera_datos --sen-carga                    # xerar e mostrar
   python -m src.xera_datos --albergues 60 --semente 7 --sen-carga
-  python -m src.xera_datos                                 # xerar e cargar (cando estea feito)
+  python -m src.xera_datos                                 # xerar e cargar en PostgreSQL e MongoDB
 """
 import argparse
+import os
 import random
 from datetime import date, timedelta
 
 from faker import Faker
+import psycopg2
+from dotenv import load_dotenv
+from pymongo import MongoClient, ReplaceOne
 
 # ------------------------------------------------------------------ catálogos
 # Concellos galegos de cada camiño, en orde de etapas. Podes engadir máis.
@@ -29,11 +28,6 @@ CAMIÑOS = {
 NOMES_ALBERGUE = ["Vieiras", "Pedra Miúda", "O Cruceiro", "A Ponte Vella", "Bordón", "A Cabaciña",
                   "Fonte Vella", "Os Carballos", "A Estrela", "Camiño Real", "Casa do Peregrino",
                   "A Xesta", "O Muíño", "Santa Mariña", "O Hórreo", "A Lareira", "Sete Fontes"]
-
-
-def pendente(nome):
-    print(f"  [pendente] {nome}() aínda non está feita")
-    return []
 
 
 # ------------------------------------------------------------------ xeración
@@ -233,15 +227,163 @@ def xera_fichas(albergues, rng, fake):
 
 # ------------------------------------------------------------------ carga
 def carga_postgres(albergues, peregrinos, reservas):
-    """TODO: crea as táboas (ou usa un script SQL de inicio) e insire os datos."""
+    """Crea o esquema se é necesario e insire ou actualiza os datos en PostgreSQL."""
+    load_dotenv()
+    variables_requiridas = ("POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD")
+    variables_ausentes = [nome for nome in variables_requiridas if not os.getenv(nome)]
+    if variables_ausentes:
+        raise RuntimeError(
+            "Faltan variables de conexión a PostgreSQL: "
+            + ", ".join(variables_ausentes)
+            + ". Configúraas no ficheiro .env."
+        )
 
-    
-    pendente("carga_postgres")
+    conexion = psycopg2.connect(
+        host=os.getenv("PGHOST", "localhost"),
+        dbname=os.environ["POSTGRES_DB"],
+        user=os.environ["POSTGRES_USER"],
+        password=os.environ["POSTGRES_PASSWORD"],
+    )
+
+    try:
+        with conexion:
+            with conexion.cursor() as cursor:
+                # As táboas créanse na orde que necesitan as claves foráneas
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS albergues (
+                        id INTEGER PRIMARY KEY,
+                        nome TEXT NOT NULL,
+                        camino TEXT NOT NULL,
+                        concello TEXT NOT NULL,
+                        prazas INTEGER NOT NULL CHECK (prazas >= 0),
+                        prezo NUMERIC(6, 2) NOT NULL
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS peregrinos (
+                        id INTEGER PRIMARY KEY,
+                        nome TEXT NOT NULL,
+                        apelidos TEXT NOT NULL,
+                        pais TEXT NOT NULL,
+                        documento TEXT NOT NULL UNIQUE,
+                        email TEXT NOT NULL UNIQUE,
+                        data_nacemento DATE NOT NULL,
+                        camino TEXT NOT NULL
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS reservas (
+                        id INTEGER PRIMARY KEY,
+                        albergue_id INTEGER NOT NULL REFERENCES albergues(id),
+                        peregrino_id INTEGER NOT NULL REFERENCES peregrinos(id),
+                        data DATE NOT NULL,
+                        UNIQUE (peregrino_id, data)
+                    )
+                """)
+
+                # Inserta os albergues e actualízaos se xa existe o mesmo ID
+                cursor.executemany("""
+                    INSERT INTO albergues
+                        (id, nome, camino, concello, prazas, prezo)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        nome = EXCLUDED.nome,
+                        camino = EXCLUDED.camino,
+                        concello = EXCLUDED.concello,
+                        prazas = EXCLUDED.prazas,
+                        prezo = EXCLUDED.prezo
+                """, [
+                    (
+                        albergue["id"], albergue["nome"], albergue["camino"],
+                        albergue["concello"], albergue["prazas"], albergue["prezo"],
+                    )
+                    for albergue in albergues
+                ])
+
+                # Insire peregrinos despois dos albergues e mantén as referencias por ID
+                cursor.executemany("""
+                    INSERT INTO peregrinos
+                        (id, nome, apelidos, pais, documento, email, data_nacemento, camino)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        nome = EXCLUDED.nome,
+                        apelidos = EXCLUDED.apelidos,
+                        pais = EXCLUDED.pais,
+                        documento = EXCLUDED.documento,
+                        email = EXCLUDED.email,
+                        data_nacemento = EXCLUDED.data_nacemento,
+                        camino = EXCLUDED.camino
+                """, [
+                    (
+                        peregrino["id"], peregrino["nome"], peregrino["apelidos"],
+                        peregrino["pais"], peregrino["documento"], peregrino["email"],
+                        date.fromisoformat(peregrino["data_nacemento"]), peregrino["camino"],
+                    )
+                    for peregrino in peregrinos
+                ])
+
+                # Insire reservas ao final, cando xa existen as dúas referencias
+                cursor.executemany("""
+                    INSERT INTO reservas (id, albergue_id, peregrino_id, data)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        albergue_id = EXCLUDED.albergue_id,
+                        peregrino_id = EXCLUDED.peregrino_id,
+                        data = EXCLUDED.data
+                """, [
+                    (
+                        reserva["id"], reserva["albergue_id"], reserva["peregrino_id"],
+                        date.fromisoformat(reserva["data"]),
+                    )
+                    for reserva in reservas
+                ])
+    finally:
+        conexion.close()
+
+    print(
+        "PostgreSQL: "
+        f"{len(albergues)} albergues, {len(peregrinos)} peregrinos e "
+        f"{len(reservas)} reservas cargados."
+    )
 
 
 def carga_mongo(fichas):
-    """TODO: garda as fichas nunha colección de MongoDB."""
-    pendente("carga_mongo")
+    """Garda ou actualiza as fichas na colección `fichas_albergues` de MongoDB."""
+    # Carga as variables de conexión definidas no ficheiro .env
+    load_dotenv()
+    variables_requiridas = ("MONGO_DB", "MONGO_USER", "MONGO_PASSWORD")
+    variables_ausentes = [nome for nome in variables_requiridas if not os.getenv(nome)]
+    if variables_ausentes:
+        raise RuntimeError(
+            "Faltan variables de conexión a MongoDB: "
+            + ", ".join(variables_ausentes)
+            + ". Configúraas no ficheiro .env."
+        )
+
+    # Prepara unha substitución por albergue; upsert crea a ficha se aínda non existe
+    operacions = [
+        ReplaceOne(
+            {"albergue_id": ficha["albergue_id"]},
+            ficha,
+            upsert=True,
+        )
+        for ficha in fichas
+    ]
+
+    # Abre a conexión co servizo publicado por Compose e autentícase na base admin
+    with MongoClient(
+        host=os.getenv("MONGO_HOST", "localhost"),
+        username=os.environ["MONGO_USER"],
+        password=os.environ["MONGO_PASSWORD"],
+        authSource="admin",
+    ) as cliente:
+        # Escolle a base e a colección; evita unha operación masiva se non hai fichas
+        coleccion = cliente[os.environ["MONGO_DB"]]["fichas_albergues"]
+        if operacions:
+            coleccion.bulk_write(operacions)
+
+    # Informa do número de documentos procesados tras pechar a conexión
+    print(f"MongoDB: {len(fichas)} fichas cargadas ou actualizadas.")
 
 
 # ------------------------------------------------------------------ main
@@ -264,8 +406,9 @@ def main():
     args = ap.parse_args()
 
     rng = random.Random(args.semente)
+    # Sementa o xerador compartido de Faker, tamén para as instancias por idioma.
+    Faker.seed(args.semente)
     fake = Faker("es_ES")
-    # TODO: Faker tamén ten a súa propia semente. Sen ela, os nomes cambian en cada execución.
 
     print(f"Semente {args.semente} · tempada {args.desde} + {args.dias} noites")
     albergues = xera_albergues(args.albergues, rng)
