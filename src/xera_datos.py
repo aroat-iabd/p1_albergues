@@ -12,7 +12,7 @@ Exemplos (desde a raíz do proxecto):
 """
 import argparse
 import random
-from datetime import date
+from datetime import date, timedelta
 
 from faker import Faker
 
@@ -60,44 +60,182 @@ def xera_albergues(n, rng):
 
 
 def xera_peregrinos(n, rng, fake):
-    """TODO (primeiro paso): devolve `n` peregrinos.
+    
+    peregrinos = []
+    #lista de fakers por país, para poder xerar nomes e apelidos realistas
+    fakers = {
+        "es_ES": Faker("es_ES"),
+        "pt_PT": Faker("pt_PT"),
+        "de_DE": Faker("de_DE"),
+    }
+    paises = {
+        "es_ES": "España",
+        "pt_PT": "Portugal",
+        "de_DE": "Alemania",
+    }
 
-    Cada peregrino é un dicionario con, polo menos: id, nome, apelidos, documento,
-    email, pais e data_nacemento.
+    for i in range(1, n + 1):
+        #camiño e país aleatorio para cada peregrino
+        camino = rng.choice(list(CAMIÑOS))
+        locale = rng.choice(list(fakers))
+        fake_pais = fakers[locale]
 
-    Pistas:
-      - fake.first_name() e fake.last_name() dan nomes realistas.
-      - Faker(["es_ES", "pt_PT", "de_DE"]) mestura idiomas, pero para saber o país
-        de cada peregrino é máis cómodo ter un Faker por país.
-      - O documento e o email deben ser únicos.
-      - Coidado coa reproducibilidade: fake.date_of_birth() depende da data de hoxe,
-        así que mañá xeraría datos distintos coa mesma semente.
-    """
-    return pendente("xera_peregrinos")
+        peregrinos.append({
+            "id": i,
+            "nome": fake_pais.first_name(),
+            "apelidos": fake_pais.last_name(),
+            "pais": paises[locale],
+            "documento": fake.unique.ssn(),
+            "email": fake.unique.email(),
+            "data_nacemento": fake.date_of_birth(minimum_age=18, maximum_age=80).isoformat(),
+            "camino": camino
+        })
+    
+    return peregrinos
 
 
 def xera_reservas(n, albergues, peregrinos, desde, dias, rng):
-    """TODO: devolve ata `n` reservas entre `desde` e `desde + dias - 1`.
 
-    Regras do negocio:
-      - Nun albergue, as reservas dunha noite non poden superar as súas prazas.
-      - Un peregrino non pode ter dúas reservas a mesma noite.
-    """
-    return pendente("xera_reservas")
+    reservas = []
+
+    # Sen datos ou cun límite/período baleiro, non hai reservas posibles
+    if n <= 0 or dias <= 0 or not albergues or not peregrinos:
+        return reservas
+
+    # Garda por noite os peregrinos dispoñibles e as prazas que quedan en cada albergue
+    noites = []
+    for offset in range(dias):
+        albergues_disponibles = [
+            (albergue, albergue["prazas"])
+            for albergue in albergues
+            if albergue["prazas"] > 0
+        ]
+        # Cada peregrino pode reservar unha vez en cada noite
+        peregrinos_disponibles = peregrinos.copy()
+        if albergues_disponibles:
+            noites.append({
+                "data": desde + timedelta(days=offset),
+                "albergues": albergues_disponibles,
+                "peregrinos": peregrinos_disponibles,
+            })
+
+    # Escolle noites ao azar ata chegar a n ou esgotar a dispoñibilidade
+    while len(reservas) < n and noites:
+        noite_i = rng.randrange(len(noites))
+        noite = noites[noite_i]
+
+        # Retira o peregrino escollido para impedir que repita esa mesma noite
+        peregrino_i = rng.randrange(len(noite["peregrinos"]))
+        peregrino = noite["peregrinos"][peregrino_i]
+        noite["peregrinos"][peregrino_i] = noite["peregrinos"][-1]
+        noite["peregrinos"].pop()
+
+        # Escolle un albergue e consume unha das súas prazas dispoñibles
+        albergue_i = rng.randrange(len(noite["albergues"]))
+        albergue, prazas = noite["albergues"][albergue_i]
+        if prazas == 1:
+            noite["albergues"][albergue_i] = noite["albergues"][-1]
+            noite["albergues"].pop()
+        else:
+            noite["albergues"][albergue_i] = (albergue, prazas - 1)
+
+        # Engade a reserva coas referencias e a data da noite seleccionada
+        reservas.append({
+            "id": len(reservas) + 1,
+            "albergue_id": albergue["id"],
+            "peregrino_id": peregrino["id"],
+            "data": noite["data"].isoformat(),
+        })
+
+        # Descarta a noite cando xa non quedan prazas ou peregrinos nela
+        if not noite["albergues"] or not noite["peregrinos"]:
+            noites[noite_i] = noites[-1]
+            noites.pop()
+
+    return reservas
 
 
 def xera_fichas(albergues, rng, fake):
-    """TODO: devolve unha ficha por albergue para MongoDB.
 
-    Mira o exemplo do enunciado (apartado 4.2): os campos deben variar dun
-    albergue a outro (non todos teñen web, opinións, garaxe para bicis...).
-    """
-    return pendente("xera_fichas")
+    fichas = []
+    # Catálogos cos que se compoñen os servizos, idiomas e opinións
+    servizos_posibles = [
+        "cociña", "lavadora", "wifi", "almorzo", "duchas quentes",
+        "secador", "toallas",
+    ]
+    idiomas_posibles = ["galego", "castelán", "inglés", "francés", "portugués", "alemán"]
+    textos_opinion = [
+        "Moi limpo", "Boa atención", "Almorzo estupendo",
+        "Moi ben situado", "Un lugar acolledor",
+    ]
+
+    for albergue in albergues:
+        # Decide si é publico ou privado e xera un horario para este albergue
+        publico = rng.choice([True, False])
+        apertura = rng.randint(11, 15)
+        peche = rng.randint(max(apertura + 5, 20), 23)
+
+        # A ficha sempre inclúe identificación, camiño, servizos, horario e titularidade
+        ficha = {
+            "albergue_id": albergue["id"],
+            "nome": (
+                f"Albergue público de {albergue['concello']}"
+                if publico else albergue["nome"]
+            ),
+            "camino": albergue["camino"],
+            "servizos": rng.sample(servizos_posibles, rng.randint(2, 5)),
+            "horario": {
+                "apertura": f"{apertura:02d}:00",
+                "peche": f"{peche:02d}:{rng.choice(['00', '30'])}",
+            },
+            "titularidade": "Xunta de Galicia" if publico else "Privada",
+        }
+
+        # Os privados poden ter datos de contacto; a web é opcional mesmo nese caso
+        if not publico and rng.random() < 0.8:
+            contacto = {"telefono": fake.phone_number()}
+            if rng.random() < 0.7:
+                contacto["web"] = fake.url()
+            ficha["contacto"] = contacto
+
+        # Inclúe estes datos só nalgúns documentos para variar a súa estrutura
+        if rng.random() < 0.75:
+            ficha["admite_cans"] = rng.choice([True, False])
+
+        # Se hai información de bicicletas, xera tamén a capacidade do garaxe
+        if rng.random() < 0.7:
+            ten_garaxe = rng.choice([True, False])
+            ficha["bicicletas"] = {
+                "garaxe": ten_garaxe,
+                "prazas": rng.randint(4, 20) if ten_garaxe else 0,
+            }
+
+        # Selecciona unha combinación de idiomas sen repeticións
+        if rng.random() < 0.65:
+            ficha["idiomas"] = rng.sample(idiomas_posibles, rng.randint(2, 4))
+
+        # As opinións son exclusivas dos privados e poden non aparecer
+        if not publico and rng.random() < 0.6:
+            ficha["opinions"] = [
+                {
+                    "autor": f"{fake.first_name()[0]}.",
+                    "nota": rng.randint(3, 5),
+                    "texto": rng.choice(textos_opinion),
+                }
+                for _ in range(rng.randint(1, 3))
+            ]
+
+        # Engade a ficha completa á lista
+        fichas.append(ficha)
+
+    return fichas
 
 
 # ------------------------------------------------------------------ carga
 def carga_postgres(albergues, peregrinos, reservas):
     """TODO: crea as táboas (ou usa un script SQL de inicio) e insire os datos."""
+
+    
     pendente("carga_postgres")
 
 
