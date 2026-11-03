@@ -9,10 +9,12 @@ Punto de partida do proxecto. Le antes o enunciado (`BDA_UD1_P1_Reservas_albergu
 | `.env.example` | Variables de conexión. Cópiao como `.env` e cambia os contrasinais. |
 | `.gitignore` | Deixa fóra do repositorio `.env`, `copias/` e o contorno virtual. |
 | `requirements.txt` | Librarías de Python con versión fixada. |
-| `src/xera_datos.py` | Xeración de albergues, peregrinos, reservas e fichas; carga PostgreSQL implementada. A carga MongoDB segue pendente. |
+| `src/xera_datos.py` | Xeración reproducible e carga do estado inicial en PostgreSQL e MongoDB. |
+| `src/reservas.py` | Conexións, inicialización de contadores e reserva atómica con Redis e PostgreSQL. |
+| `src/consultas.py` | Consultas de dispoñibilidade, medicións e proba concorrente de coherencia. |
 | `src/__init__.py` | Fai de `src` un paquete de Python (permite `from src.modulo import ...`). |
 
-Todo o demais (`compose.yaml`, esquema da base de datos, código de Redis, copias, README final) facédelo vós.
+`app.py` é o punto de entrada da aplicación; a súa lóxica está nos módulos de `src/`.
 
 ## Estrutura do repositorio
 
@@ -27,7 +29,9 @@ p1-albergues/
 ├── README.md
 └── src/              todo o resto do código: módulos de Python e scripts (.py, .sh)
     ├── __init__.py
-    └── xera_datos.py
+    ├── reservas.py
+    ├── xera_datos.py
+    └── consultas.py
 ```
 
 - Na raíz só van a configuración, o README e, se o hai, o punto de entrada (`app.py` ou `main.py`).
@@ -62,11 +66,11 @@ python -m src.xera_datos --sen-carga
 ## Carga en PostgreSQL
 
 Desde a raíz do proxecto, copia `.env.example` como `.env` e configura as
-credenciais. Inicia o servizo definido en `compose.yaml` e executa o xerador sen
+credenciais. Inicia os servizos definidos en `compose.yaml` e executa o xerador sen
 `--sen-carga`:
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres redis mongo
 python -m src.xera_datos
 ```
 
@@ -75,6 +79,19 @@ previos pola xeración actual nunha única transacción. Isto elimina as reserva
 novas creadas pola aplicación; úsao só cando queiras reiniciar o estado inicial.
 `carga_mongo()` actualiza as fichas xeradas e elimina as que xa non correspondan
 a un albergue da xeración actual.
+
+## Aplicación e proba de sobreventa
+
+Despois de cargar o estado inicial, reconstrúe os contadores e executa a proba
+concorrente desde a raíz:
+
+```bash
+python app.py inicializar
+python app.py probar-sobreventa --prazas 3 --intentos 30
+```
+
+A proba comproba que só se confirman as prazas dispoñibles e verifica que o
+número de reservas en PostgreSQL coincide co decremento do contador en Redis.
 
 ## Comprobar a reproducibilidade
 
@@ -89,10 +106,9 @@ diff a.txt b.txt && echo "Reproducible"
 ## Orde recomendada
 
 1. Probar `xera_peregrinos()`, `xera_reservas()` e `xera_fichas()` con `--sen-carga`.
-2. PostgreSQL: iniciar o servizo con `docker compose up -d postgres` e probar `carga_postgres()`.
-4. Redis: contadores, `reservar()`, proba de sobreventa e caché.
-5. MongoDB (verase máis adiante): servizo no compose e `carga_mongo()`.
-6. `src/copia.sh` e proba de restauración.
-7. Medicións e README.
+2. PostgreSQL e MongoDB: iniciar os servizos con `docker compose up -d postgres mongo` e probar as cargas.
+3. Redis: iniciar os servizos con `docker compose up -d redis` e probar contadores, reservas, sobreventa e caché.
+4. `src/copia.sh` e proba de restauración.
+5. Medicións e README.
 
 Facede un *commit* ao rematar cada paso: se algo se rompe, podedes volver atrás.
