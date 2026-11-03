@@ -2,3 +2,4 @@
 copias/
 .venv/
 __pycache__/
+.vscode/
