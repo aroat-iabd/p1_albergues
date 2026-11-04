@@ -1,6 +1,6 @@
 # P1 · Sistema de Reservas de Albergues: Camiño Aberto
 
-Este proxecto implementa a infraestrutura de datos dun sistema de reservas para a rede de albergues Camiño Aberto, combinando tecnoloxías relacionais, documentais e bases de datos en memoria para acadar alta dispoñibilidade, integridade e rendemento.
+Este proxecto implementa a infraestrutura de datos dun sistema de reservas para a rede de albergues Camiño Aberto, combinando tecnoloxías relacionais, documentais e bases de datos en memoria para acadar consulta de dispoñibilidade de prazas en tempo real, integridade e rendemento.
 
 ## 1. Arquitectura do Sistema
 
@@ -9,9 +9,14 @@ A solución divídese en tres sistemas principais, cada un optimizado para un pr
 | Sistema | Función principal | Xustificación |
 | :--- | :--- | :--- |
 | **PostgreSQL 17** | Datos relacionais (albergues, peregrinos, reservas). | Garantiza a integridade referencial, o cumprimento ACID para as transaccións e un esquema ríxido para datos troncais. |
-| **Redis 7.4** | Caché de consultas e xestión de contadores. | Permite validar a dispoñibilidade e facer reservas de xeito atómico en memoria de forma case instantánea, evitando asóbas na base principal. |
+| **Redis 7.4** | Caché de consultas e xestión de contadores. | Permite validar a dispoñibilidade e facer reservas de xeito atómico en memoria de forma case instantánea, evitando a sobreventa de prazas na base principal. |
 | **MongoDB 8.0** | Fichas detalladas dos albergues. | O seu esquema flexible permite gardar atributos dinámicos (opinións, servizos, garaxes) que varían enormemente entre albergues públicos e privados. |
 
+### Infraestrutura Docker
+
+Os servizos están configurados en `compose.yaml` con versións fixadas, unha rede propia (`albergues_net`), volumes persistentes e comprobacións de saúde (*healthchecks*).
+
+As credenciais defínense no ficheiro `.env`, excluído de Git, e facilítase un `.env.example` como referencia. Redis utiliza persistencia AOF (`appendonly yes`) para conservar os datos entre reinicios. Tamén se inclúe Adminer como ferramenta opcional para consultar PostgreSQL.
 
 > **Nota:** Cando se di que unha operación é "atómica" significa que se executa como un bloque único e indivisible: ou se completa totalmente ou non se fai, sen que ningún outro proceso poida interrumpila ou cortarse no medio.
 
@@ -58,6 +63,18 @@ python -m src.xera_datos --albergues 40 --peregrinos 1500 --reservas 5000 --seme
 
 - Pódese engadir o flag `--sen-carga` para visualizar os datos na terminal sen inserilos nas bases de datos.
 
+### Validación do xerador
+
+Comprobouse a reproducibilidade executando dúas veces o xerador coa mesma semente (`--semente 7 --sen-carga`) e comparando as saídas mediante `diff`, sen atopar diferenzas.
+
+Tamén se realizou unha carga de proba coa semente 42:
+
+- PostgreSQL: 3 albergues, 15 peregrinos e 20 reservas.
+- MongoDB: 3 fichas de albergues.
+- Redis: 48 contadores inicializados a partir das reservas existentes.
+
+O xerador controla as prazas dispoñibles por albergue e noite e impide que un mesmo peregrino teña máis dunha reserva para a mesma data.
+
 ## 5. Aplicación: Probas e Medicións
 
 Unha vez cargado o estado inicial, o sistema de reservas pódese probar utilizando o punto de entrada principal `app.py`.
@@ -76,25 +93,75 @@ Simula un escenario de alta concorrencia onde múltiples fíos intentan reservar
 python app.py probar-sobreventa --prazas 3 --intentos 30
 ```
 
-- **Resultado esperado:** Só se confirmarán 3 reservas. As bases de datos PostgreSQL e Redis amosarán total coherencia sen rexistrar sobreventas.
+- **Resultado obtido:** Proba superada con 30 intentos simultáneos de reserva para un albergue con só 3 prazas dispoñibles.
+
+| Comprobación | Resultado |
+|---|---:|
+| Intentos de reserva | 30 |
+| Reservas confirmadas | 3 |
+| Reservas rexeitadas | 27 |
+| Reservas rexistradas en PostgreSQL | 3 |
+| Prazas restantes en Redis | 0 |
+
+Non se produciu sobreventa e os contadores de Redis mantivéronse coherentes cos datos de PostgreSQL.
+
+### Probas adicionais de Redis
+
+**Recuperación ante erros de PostgreSQL**
+
+Simulouse unha reserva cun peregrino inexistente para provocar un erro de clave foránea. PostgreSQL rexeitou a inserción e Redis recuperou automaticamente a praza descontada.
+
+- Prazas antes do intento: 22.
+- Prazas despois do erro: 22.
+- Resultado: compensación correcta, sen perda de dispoñibilidade.
+
+**Funcionamento da caché**
+
+Comprobouse unha consulta de dispoñibilidade para o Camiño Francés o 01/05/2027:
+
+- TTL inicial: 30 segundos.
+- TTL despois de 2 segundos: 28 segundos.
+- Os resultados coincidiron cos obtidos directamente en PostgreSQL.
+
+Tamén se comprobou a invalidación da caché tras unha reserva confirmada. Nun albergue temporal, a dispoñibilidade pasou de 3 a 2 prazas, eliminouse a entrada anterior e a nova consulta devolveu os datos actualizados.
+
+Todas as probas finalizaron correctamente.
 
 ### Medición de Rendemento (PostgreSQL vs Redis)
 Compara a latencia dunha consulta directa á base relacionacional fronte ao acceso ao sistema de caché en Redis:
 
 ```bash
-python app.py medir --repeticions 100
+python app.py medir --camino Francés --noite 2027-05-01 --repeticions 100
 ```
 
-*Os resultados demostran que a obtención desde a caché de Redis (en milisegundos) é unha orde de magnitude máis rápida ca o cruzamento de táboas nativo en PostgreSQL.*
+**Resultados obtidos:** Realizáronse 100 consultas de dispoñibilidade para o Camiño Francés o 01/05/2027.
+
+| Sistema | Tempo medio por consulta |
+|---|---:|
+| PostgreSQL | 13,599 ms |
+| Redis con caché | 8,003 ms |
+
+Redis foi aproximadamente **1,70 veces máis rápido**, reducindo o tempo medio de resposta nun **41,2 %**.
+
+Estas medicións son orientativas, xa que se utilizou un conxunto pequeno de datos. Os tempos tamén inclúen o custo das conexións cos contedores, e a consulta de Redis realizouse coa caché previamente preparada.
 
 ### Consumo de Recursos dos Contedores
-Medicións obtidas mediante `docker` stats en estado de repouso/carga moderada:
+
+Realizouse unha medición puntual do consumo de recursos dos tres contedores, principalmente en repouso, mediante o seguinte comando:
+
+```bash
+docker stats --no-stream $(docker compose ps -q postgres redis mongo)
+```
+
+Os resultados obtidos foron:
 
 | Contedor | CPU % | Memoria (Uso / Límite) | Mem % |
-| :--- | :--- | :--- | :--- |
-| `postgres` | ~0.15% | ~45 MiB / 15.5 GiB | ~0.28% |
-| `mongo` | ~0.30% | ~90 MiB / 15.5 GiB | ~0.56% |
-| `redis` | ~0.10% | ~15 MiB / 15.5 GiB | ~0.09% |
+|---|---:|---|---:|
+| PostgreSQL | 0,00 % | 49,48 MiB / 7,437 GiB | 0,65 % |
+| MongoDB | 0,53 % | 319,7 MiB / 7,437 GiB | 4,20 % |
+| Redis | 0,27 % | 11,79 MiB / 7,437 GiB | 0,15 % |
+
+Nesta medición, MongoDB presentou o maior consumo de memoria, mentres que Redis foi o servizo máis lixeiro. Estes valores corresponden a unha captura puntual e poden variar segundo a carga de traballo e o equipo utilizado.
 
 ## 6. Copias de Seguridade e Restauración
 O proxecto implementa un sistema de copias de seguridade automatizado para PostgreSQL e MongoDB mediante o script `src/copia.sh`.
@@ -102,7 +169,7 @@ O proxecto implementa un sistema de copias de seguridade automatizado para Postg
 ### Crear copias
 
 ```bash
-src/copia.sh backup
+bash src/copia.sh backup
 ```
 
 Xéranse dous ficheiros comprimidos e identificados por data no directorio `copias/` (ex: `postgres_YYYY-MM-DD_HH-MM-SS.dump` e `mongo_YYYY-MM-DD_HH-MM-SS.archive.gz`).
@@ -110,7 +177,7 @@ Xéranse dous ficheiros comprimidos e identificados por data no directorio `copi
 ### Restaurar nunha nova base de probas
 
 ```bash
-src/copia.sh restaurar copias/<ficheiro_pg>.dump copias/<ficheiro_mongo>.archive.gz
+bash src/copia.sh restaurar copias/<ficheiro_pg>.dump copias/<ficheiro_mongo>.archive.gz
 ```
 
 Crea unhas bases de datos clons cun nome xerado automaticamente para validar a integridade da copia sen alterar a información de produción.
@@ -118,11 +185,12 @@ Crea unhas bases de datos clons cun nome xerado automaticamente para validar a i
 ### Restaurar nunha base de probas existente
 
 ```bash
-src/copia.sh restaurar-en albergues_proba_20261103_193733 copias/<ficheiro_pg>.dump copias/<ficheiro_mongo>.archive.gz
+bash src/copia.sh restaurar-en albergues_proba_20261103_193733 copias/<ficheiro_pg>.dump copias/<ficheiro_mongo>.archive.gz
 ```
 
 ### Simulación de Borrado e Recuperación
-Levouse a cabo unha proba de desastre borrando táboas completas en bases clonadas:
+
+Levouse a cabo unha simulación de perda de datos eliminando os rexistros de reservas e os documentos das fichas en bases de probas independentes, sen modificar as bases de datos orixinais:
 
 1. Executouse `TRUNCATE TABLE reservas` (PostgreSQL) e `deleteMany({})` (MongoDB).
 
@@ -131,6 +199,9 @@ Levouse a cabo unha proba de desastre borrando táboas completas en bases clonad
 3. Executouse a restauración vía `pg_restore` e `mongorestore` chamados polo script de recuperación.
 
 4. Resultado: Os datos foron restaurados por completo de forma satisfactoria na base test (20 reservas, 3 fichas), evidenciando a integridade das copias e o éxito do procedemento.
+
+Para máis detalles sobre o procedemento de copias, a restauración e os resultados das probas, consultar [Copias de seguridade e probas](docs/copias_seguridad.md).
+
 
 ## 7. Uso da Intelixencia Artificial
 Durante o desenvolvemento deste proxecto, utilizáronse asistentes baseados en IA (como Gemini/ChatGPT) como apoio en labores de:
